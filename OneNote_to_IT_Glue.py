@@ -1,14 +1,15 @@
 import os
 import re
 import time
+import uuid
 import json
+import string
 import shutil
 import zipfile
 import traceback
 from urllib.parse import quote
 import win32com.client
 import xml.etree.ElementTree as ET
-from lxml import etree
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.oxml import OxmlElement
@@ -22,11 +23,15 @@ def getURLOrPath(client, client_prospects_path):
     url_or_path = None
     file_name = ""
 
-    onenote_path, mid_string = os.path.join(client_prospects_path, f"{client}\\Operations\\Documentation\\OneNote"), "Operations/Documentation/OneNote"
+    if client == "HH Marshall, LLC":
+        client_folder = "HH Cassopolis LLC"
+    else:
+        client_folder = client
+    onenote_path, mid_string = os.path.join(client_prospects_path, f"{client_folder}\\Operations\\Documentation\\OneNote"), "Operations/Documentation/OneNote"
     if not os.path.exists(onenote_path):
-        onenote_path, mid_string = os.path.join(client_prospects_path, f"{client}\\Documentation\\OneNote"), "Documentation/OneNote"
+        onenote_path, mid_string = os.path.join(client_prospects_path, f"{client_folder}\\Documentation\\OneNote"), "Documentation/OneNote"
     if not os.path.exists(onenote_path):
-        print(f"No documentation folders found in {client_prospects_path}\\{client}")
+        print(f"No documentation folders found in {client_prospects_path}\\{client_folder}")
         return url_or_path, file_name
     
     file_list = os.listdir(onenote_path)
@@ -37,7 +42,7 @@ def getURLOrPath(client, client_prospects_path):
     # Get .url or .one. Does basic check to see if the start of the client and file names are the same
     notebook_file_list = []
     for file in file_list:
-        if (file.endswith('.url') or file.endswith('.one')) and (client[0].lower() == file[0].lower()):
+        if (file.endswith('.url') or file.endswith('.one')) and (client[:5].lower() == file[:5].lower()):
             notebook_file_list.append(file)
     
     if len(notebook_file_list) > 1:
@@ -48,21 +53,22 @@ def getURLOrPath(client, client_prospects_path):
             file_list_with_paths.append(os.path.join(onenote_path, file))
 
         #get newest file if there are mutliple    
-        file_name = max(file_list_with_paths, key=os.path.getmtime)
+        full_path = max(file_list_with_paths, key=os.path.getmtime)
+        file_name = os.path.basename(full_path)
         
     elif len(notebook_file_list) == 0:
         manual_check_needed[client_name].append(f"No valid .url or .one files found in {onenote_path}: {file_list}")
     else:
         file_name = notebook_file_list[0]
 
-    #Remove ".url" so it will work in full URL later
     if file_name.endswith('.url'):
+        #Remove ".url" so it will work in full URL later
         file_name = file_name[:-len('.url')]
 
         encoded_file_name = quote(file_name)
-        encoded_client_name = quote(client)
+        encoded_client_folder = quote(client_folder)
 
-        url_or_path = f"onenote:https://aunalytics.sharepoint.com/sites/Aunalytics2/Document%20Library/Clients%20&%20Prospects/{encoded_client_name}/{mid_string}/{encoded_file_name}/"
+        url_or_path = f"onenote:https://aunalytics.sharepoint.com/sites/Aunalytics2/Document%20Library/Clients%20&%20Prospects/{encoded_client_folder}/{mid_string}/{encoded_file_name}/"
     elif file_name.endswith('.one'):
         url_or_path = os.path.join(onenote_path, file_name)
  
@@ -174,14 +180,14 @@ def getHeadingsFromNotebook(target_section_id):
     # Get all notebook info
     notebooks_xml = app.GetHierarchy(target_section_id, 4)
     root = ET.fromstring(notebooks_xml)
-    ns = {'one': 'http://schemas.microsoft.com/office/onenote/2013/onenote'}
+    namespace = {'one': 'http://schemas.microsoft.com/office/onenote/2013/onenote'}
 
     #Used for checking full notebook as raw .xml
     #print(notebooks_xml)
 
     #Track heading text as key and "Heading" level as value
     heading_levels_dict = {}
-    for page in root.findall('one:Page', ns):
+    for page in root.findall('one:Page', namespace):
         page_name = page.get('name')
         page_level = page.get('pageLevel')
 
@@ -224,7 +230,8 @@ def formatHeadings(client, target_section_id):
     document = Document(f"temp\\{client}.docx")
 
     if len(document.paragraphs) == 1:
-        manual_check_needed[client_name].append(f"Error exporting from OneNote file. Review OneNote for corrupted sections")
+        failed_list = findCorruptSections(target_section_id)
+        manual_check_needed[client_name].append(f"Error exporting from OneNote file. Recreate corrupted sections: {failed_list}")
 
     heading_tracking_list, heading_levels_dict = getHeadingsFromDocx(document, target_section_id)
 
@@ -292,12 +299,12 @@ def rezipDocx(document_name, extract_folder_name):
 def createStyles(client):
     document = Document(f"temp\\{client}.docx")
     
-    dummy_document_xml_path = extractDocx("template.docx", "temp\\extracted_contents\\template")
+    template_document_xml_path = extractDocx("template.docx", "temp\\extracted_contents\\template")
     document_xml_path = extractDocx(f"temp\\{client}.docx", "temp\\extracted_contents\\test")
 
     os.remove(document_xml_path)
     os.remove(f"temp\\{client}.docx")
-    shutil.copy2(dummy_document_xml_path, document_xml_path)
+    shutil.copy2(template_document_xml_path, document_xml_path)
 
     rezipDocx(f"temp\\{client}.docx", "temp\\extracted_contents\\test")
     
@@ -377,17 +384,42 @@ def convertToDoc(client, formatted_client):
     os.remove(f"temp\\final_docx\\{formatted_client}.docx")
 
 
-def Main(notebook_id=None):
+def findCorruptSections(target_section_id):
+    app = win32com.client.dynamic.Dispatch('OneNote.Application')
+    notebook_info = app.GetHierarchy(target_section_id, 4)
+    root = ET.fromstring(notebook_info)
+    namespace = "{http://schemas.microsoft.com/office/onenote/2013/onenote}Page"
+
+    os.makedirs("temp\\find_corrupt_section\\")
+    failed_list = []
+    pages = 0
+    for page in root.iter(namespace):
+        page_name = page.get('name')
+        formatted_page_name = page_name.lower().translate(str.maketrans('', '', string.punctuation))
+        page_id = page.get('ID')
+        docx_path = os.path.join(os.getcwd(), f"temp\\find_corrupt_section\\{formatted_page_name}.one")
+
+        try:
+            app.Publish(page_id, docx_path, 0, "")
+        except Exception as e:
+        pages += 1
+
+    shutil.rmtree("temp\\find_corrupt_section\\")
+            
+    return failed_list
+    
+def Main():
     global manual_check_needed
     global client_name
     
-    debugging = False
+    debugging = True
     client_prospects_path = os.path.join(os.environ['OneDrive'], "Clients & Prospects")
     all_client_list = os.listdir(client_prospects_path)
+    notebook_id = None
 
     # change the client and debugging boolean to enable debugging for specific clients 
     if debugging:
-        all_client_list = ["City of Rochester", "City of South Bend"]
+        all_client_list = ["HH Marshall, LLC", "Primary Care Partners of South Bend, LLC", "StresCore, Inc", "Transpo"]
         
     #Can be used to import a list from .txt file
     """
@@ -410,11 +442,12 @@ def Main(notebook_id=None):
                     createDoc(target_section_id, formatted_client)
                     createStyles(formatted_client)
                     formatHeadings(formatted_client, target_section_id)
-                    convertToDoc(client, formatted_client)
+                    if len(manual_check_needed[client_name]) == 0:
+                        convertToDoc(client, formatted_client)
 
         #Catch and print all errors for failed clients
         except Exception as e:
-            print(f"{client} failed. skipping. error message:")
+            print(f"{client} failed. Skipping. Error message:")
             print(e)
             traceback.print_exc()
             continue
@@ -437,8 +470,6 @@ def Main(notebook_id=None):
 #Global variable used to store what clients need review
 manual_check_needed = {}
 client_name = ""
-Main()
-
 
 
 
