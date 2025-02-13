@@ -16,7 +16,7 @@ from docx.shared import Inches, Pt
 from docx.oxml import OxmlElement
 from docx.enum.style import WD_STYLE_TYPE
 
-#Global variable used to store what needs review
+#Global variable used to log store what needs review
 manual_check_needed = {}
 client_name = ""
 
@@ -36,7 +36,7 @@ def getNotebookID(path_or_url, url_file=False):
                 time.sleep(3)
 
                 try:
-                    open_notebooks = app.GetHierarchy("" , 1)
+                    open_notebooks = app.GetHierarchy("" , 4)
                     break
                 except:
                     continue
@@ -213,7 +213,11 @@ def formatHeadings(client, target_section_id):
         print(string)
         manual_check_needed[client_name].append(string)
 
-        
+    document.save(f"temp\\final_docx\\{client}.docx")
+    os.remove(f"temp\\{client}.docx")
+
+    return
+    
     heading_tracking_list, heading_levels_dict = getHeadingsFromDocx(document, target_section_id)
 
     # For each paragraph that needs to be a heading, add level (i.e. "Heading 1", "Heading 2")
@@ -283,21 +287,14 @@ def createStyles(client):
         shutil.rmtree(directory)
 
 #Fixes issue with formatted docx not working in IT Glue by opening them in Word and converting to .doc
-def convertToDoc(client, formatted_client):
+def convertToDoc(client, formatted_client, doc_path):
     current_directory = os.getcwd()
 
     word = win32com.client.dynamic.Dispatch("Word.Application")
     word.Visible = False
 
     document = word.Documents.Open(f"{current_directory}\\temp\\final_docx\\{formatted_client}.docx")
-
-    #Adds client name to start of file so the file name shows correctly in IT Glue
-    range = document.Content
-    range.InsertBefore(client + ".OneNote\n")
-    range = document.Range(0, len(client) + 1)
-    range.Style = "Heading 1"
-
-    document.SaveAs(f"{current_directory}\\formatted_docs\\{client}.doc", FileFormat=0)
+    document.SaveAs(doc_path, FileFormat=0)
 
     document.Close()
     word.Quit()
@@ -337,18 +334,18 @@ def isDocxCorrupt(docx_path):
 
     return False
 
-def convertToITGlue(url_or_path, user_input_client_name):
+def convertToITGlue(target_section_id, section_name, doc_path):
     global manual_check_needed
     global client_name
 
     notebook_id = None
-    client_name = user_input_client_name
+    client_name = section_name
     manual_check_needed[client_name] = []
+    formatted_client = client_name.replace(',', '').lower().replace(' ', '_')
 
     try:
-        #getID also adds a value to client_name
-        target_section_id, notebook_id = getID(url_or_path)
-        formatted_client = client_name.replace(',', '').lower().replace(' ', '_')
+        #getID also can also add a value to global client_name if its empty
+        #target_section_id, notebook_id = getID(url_or_path)
 
         if not os.path.exists(f"formatted_docs\\{client_name}.doc"):
             createDoc(target_section_id, formatted_client)
@@ -356,7 +353,7 @@ def convertToITGlue(url_or_path, user_input_client_name):
             formatHeadings(formatted_client, target_section_id)
 
             if len(manual_check_needed[client_name]) == 0:
-                convertToDoc(client_name, formatted_client)
+                convertToDoc(client_name, formatted_client, doc_path)
                 print(f"The OneNote for {client_name} has successfully been converted to a IT Glue formatted .doc")
 
     #Catch and print all errors for failed clients
@@ -376,8 +373,177 @@ def convertToITGlue(url_or_path, user_input_client_name):
                 pass
 
     if manual_check_needed:
-        with open(f"need_review\\{client_name}.json", 'w') as json_file:
+        with open(f"need_review\\manual_check_needed.json", 'w') as json_file:
             json.dump(manual_check_needed, json_file)
 
-    manual_check_needed = {}
+    #manual_check_needed = {}
     client_name = ""
+
+def createDir(directory):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+def getPlayBookSections():
+    current_directory = os.getcwd()
+    base_directory = f"{current_directory}\\formatted_docs\\NOC_Playbook"
+    createDir(base_directory)
+    
+    noc_playbook_dict = {"NOC": {}}  # Initialize with a nested dictionary
+    
+    app = win32com.client.dynamic.Dispatch('OneNote.Application')
+    open_notebooks = app.GetHierarchy("", 1)
+
+    root = ET.fromstring(open_notebooks)
+    namespaces = {'one': 'http://schemas.microsoft.com/office/onenote/2013/onenote'}
+    all_notebooks = root.findall('one:Notebook', namespaces)        
+
+    for notebook in all_notebooks:
+        if notebook.get('name') == "NOC":
+            notebook_id = notebook.get('ID')
+            noc_playbook_dict["NOC"]["ID"] = notebook_id
+            break
+
+    noc_playbook = app.GetHierarchy(notebook_id, 4)
+    root = ET.fromstring(noc_playbook)
+
+    #all sections from highest level of playbook hierarchy
+    all_playbook_sections = root.findall('one:Section', namespaces)
+    for section in all_playbook_sections:
+        section_name = section.get("name")
+        section_id = section.get("ID")
+        section_dir = f"{base_directory}\\{section_name}"
+        createDir(section_dir)
+        
+        noc_playbook_dict["NOC"][section_name] = {"ID": section_id, "Pages": {}}
+
+        all_pages = section.findall('one:Page', namespaces)
+        main_dir = f"{section_dir}"
+        sub_dir = f"{section_dir}"
+        
+        for page in all_pages:
+            page_name = page.get("name")
+            page_id = page.get("ID")
+            page_level = page.get("pageLevel")
+            
+            if page_level == "1":
+                main_dir = f"{section_dir}\\{page_name}"
+                page_dir = f"{section_dir}\\{page_name}.doc"
+            elif page_level == "2":
+                createDir(main_dir)
+                sub_dir = f"{main_dir}\\{page_name}"
+                page_dir = f"{main_dir}\\{page_name}.doc"
+            elif page_level == "3":
+                createDir(sub_dir)
+                page_dir = f"{sub_dir}\\{page_name}.doc"
+                
+            noc_playbook_dict["NOC"][section_name]["Pages"][page_name] = {"ID": page_id}
+            
+            convertToITGlue(page_id, page_name, page_dir)
+        
+
+    #all section groups from highest level of playbook hierarchy
+    all_playbook_section_groups = root.findall('one:SectionGroup', namespaces)
+    for section_group in all_playbook_section_groups:
+        section_group_name = section_group.get("name")
+        section_group_dir = f"{base_directory}\\{section_group_name}"
+        createDir(section_group_dir)
+        
+        noc_playbook_dict["NOC"][section_group_name] = {"ID": section_group.get("ID")}
+
+        #all sections from sections groups from highest level of playbook hierarchy
+        all_sections = section_group.findall('one:Section', namespaces)
+        for section in all_sections:
+            section_name = section.get("name")
+            section_id = section.get("ID")
+            section_dir = f"{section_group_dir}\\{section_name}"
+            createDir(section_dir)
+            
+            noc_playbook_dict["NOC"][section_group_name][section_name] = {"ID": section_id, "Pages": {}}
+
+            all_pages = section.findall('one:Page', namespaces)
+            main_dir = f"{section_dir}"
+            sub_dir = f"{section_dir}"
+            
+            for page in all_pages:
+                page_name = page.get("name")
+                page_id = page.get("ID")
+                page_level = page.get("pageLevel")
+                
+                if page_level == "1":
+                    main_dir = f"{section_dir}\\{page_name}"
+                    page_dir = f"{section_dir}\\{page_name}.doc"
+                elif page_level == "2":
+                    createDir(main_dir)
+                    sub_dir = f"{main_dir}\\{page_name}"
+                    page_dir = f"{main_dir}\\{page_name}.doc"
+                elif page_level == "3":
+                    createDir(sub_dir)
+                    page_dir = f"{sub_dir}\\{page_name}.doc"
+                    
+                noc_playbook_dict["NOC"][section_group_name][section_name]["Pages"][page_name] = {"ID": page_id}
+                
+                convertToITGlue(page_id, page_name, page_dir)
+            
+
+    #get "Systems, Tools, and Applications" section group
+    system_tools_applications_group = None
+    for section_or_group in all_playbook_section_groups:
+        if section_or_group.get("name") == "Systems, Tools, and Applications":
+            system_tools_applications_group = section_or_group
+            break
+
+    #if "Systems, Tools, and Applications" section group exists
+    if system_tools_applications_group is not None:
+        system_tools_applications_group_name = "Systems, Tools, and Applications"
+        system_tools_applications_group_dir = f"{base_directory}\\{system_tools_applications_group_name}"
+        createDir(system_tools_applications_group_dir)
+        
+        all_system_tools_applications_section_groups = system_tools_applications_group.findall('one:SectionGroup', namespaces)
+
+        #for each section group under "Systems, Tools, and Applications"
+        for section_group in all_system_tools_applications_section_groups:
+            section_group_name = section_group.get("name")
+            section_group_dir = f"{system_tools_applications_group_dir}\\{section_group_name}"
+            createDir(section_group_dir)
+            
+            noc_playbook_dict["NOC"][system_tools_applications_group_name][section_group_name] = {"ID": section_group.get("ID")}
+
+            #get each section under specific section group of "Systems, Tools, and Applications"
+            all_sections = section_group.findall('one:Section', namespaces)
+            for section in all_sections:
+                section_name = section.get("name")
+                section_id = section.get("ID")
+                section_dir = f"{section_group_dir}\\{section_name}"
+                createDir(section_dir)
+                
+                noc_playbook_dict["NOC"][system_tools_applications_group_name][section_group_name][section_name] = {"ID": section_id, "Pages": {}}
+
+                all_pages = section.findall('one:Page', namespaces)
+                main_dir = f"{section_dir}"
+                sub_dir = f"{section_dir}"
+                
+                for page in all_pages:
+                    page_name = page.get("name")
+                    page_id = page.get("ID")
+                    page_level = page.get("pageLevel")
+                    
+                    if page_level == "1":
+                        main_dir = f"{section_dir}\\{page_name}"
+                        page_dir = f"{section_dir}\\{page_name}.doc"
+                    elif page_level == "2":
+                        createDir(main_dir)
+                        sub_dir = f"{main_dir}\\{page_name}"
+                        page_dir = f"{main_dir}\\{page_name}.doc"
+                    elif page_level == "3":
+                        createDir(sub_dir)
+                        page_dir = f"{sub_dir}\\{page_name}.doc"
+                        
+                    noc_playbook_dict["NOC"][system_tools_applications_group_name][section_group_name][section_name]["Pages"][page_name] = {"ID": page_id}
+                    
+                    convertToITGlue(page_id, page_name, page_dir)
+                
+
+    return json.dumps(noc_playbook_dict, indent=4)
+
+
+print(getPlayBookSections())
