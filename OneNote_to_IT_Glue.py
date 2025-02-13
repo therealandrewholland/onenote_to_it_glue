@@ -36,9 +36,6 @@ def getURLOrPath(client, client_prospects_path):
     
     file_list = os.listdir(onenote_path)
 
-    if len(file_list) == 0:
-        manual_check_needed[client_name].append(f"No files found in {onenote_path}")
-
     # Get .url or .one. Does basic check to see if the start of the client and file names are the same
     notebook_file_list = []
     for file in file_list:
@@ -315,39 +312,32 @@ def createStyles(client):
         shutil.rmtree(directory)
 
 # Not really needed. Used for checking and formatting client .docx files before uploading
-"""
 def format_client(client):
-    client_2 = client.replace(',', '').lower().replace(' ', '_').replace('inc', '').replace('.', '')
+    client_2 = client.replace(',', '').lower().replace('inc', '').replace('.', '').replace(',', '').replace(' ', '')
     return client_2
 
-def crossCheckLists():
+def crossCheckLists(all_client_list, pod_list):
     formatted_list_1 = []
     formatted_list_2 = []
-    dict_lookup = {}
+    client_dict = {}
 
-    for client in client_list:
+    pod_list += ["City of Hastings", "Lineage Logistics", "Payroc WorldAccess LLC"]
+
+    for client in all_client_list:
         formatted_client = format_client(client)
-        formatted_list_1.append(formatted_client)   
+        formatted_list_1.append(formatted_client)
+        client_dict[formatted_client] = client
 
-    for client in CLIENT_LIST:
-        #try:
-        #client = "City of South Bend"
+    for client in pod_list:
         formatted_client = format_client(client)
         formatted_list_2.append(formatted_client)
-        #client.replace(',', '').lower().replace(' ', '_').replace('inc', '').replace('.', '')
-        dict_lookup[formatted_client] = client
 
-    same_clients = list(set(formatted_list_1) & set(formatted_list_2))
 
-    print(sorted(same_clients))
+    keys = list(set(formatted_list_1) & set(formatted_list_2))
 
-    for client in same_clients:
-        client = dict_lookup[client]
-        formatted_client = client.replace(',', '').lower().replace(' ', '_')
-        
-        if os.path.exists(f"temp\\{formatted_client}.docx"):
-            shutil.copy(f"temp\\{formatted_client}.docx", f"formatted_docs_2\\{client}.docx")
-"""
+    return keys, client_dict
+
+
 """
 def getBodeList():
     all_client_list = os.listdir("formatted_docs_2\\")
@@ -392,7 +382,6 @@ def findCorruptSections(target_section_id):
 
     os.makedirs("temp\\find_corrupt_section\\")
     failed_list = []
-    pages = 0
     for page in root.iter(namespace):
         page_name = page.get('name')
         formatted_page_name = page_name.lower().translate(str.maketrans('', '', string.punctuation))
@@ -402,7 +391,7 @@ def findCorruptSections(target_section_id):
         try:
             app.Publish(page_id, docx_path, 0, "")
         except Exception as e:
-        pages += 1
+            failed_list.append(page_name)
 
     shutil.rmtree("temp\\find_corrupt_section\\")
             
@@ -412,7 +401,7 @@ def Main():
     global manual_check_needed
     global client_name
     
-    debugging = True
+    debugging = False
     client_prospects_path = os.path.join(os.environ['OneDrive'], "Clients & Prospects")
     all_client_list = os.listdir(client_prospects_path)
     notebook_id = None
@@ -422,13 +411,15 @@ def Main():
         all_client_list = ["HH Marshall, LLC", "Primary Care Partners of South Bend, LLC", "StresCore, Inc", "Transpo"]
         
     #Can be used to import a list from .txt file
-    """
+    
     with open("Client_List.txt", 'r') as file:
         data = file.read()
         client_list = eval(data)
-    """
 
-    for client in all_client_list:
+    keys, client_dictionary = crossCheckLists(all_client_list, client_list)
+
+    for key in keys:
+        client = client_dictionary[key]
         try:
             formatted_client = client.replace(',', '').lower().replace(' ', '_')
             client_name = client
@@ -462,14 +453,15 @@ def Main():
                     print(f"Unable to close notebook or section for {client}")
                     
 
-    if manual_check_needed:
-        sorted_dict = dict(sorted(manual_check_needed.items()))
-        with open("need_review\\manual_check_needed.json", 'w') as json_file:
-            json.dump(sorted_dict, json_file)
+        if manual_check_needed:
+            sorted_dict = dict(sorted(manual_check_needed.items()))
+            with open("need_review\\manual_check_needed.json", 'w') as json_file:
+                json.dump(sorted_dict, json_file)
 
 #Global variable used to store what clients need review
 manual_check_needed = {}
 client_name = ""
 
+Main()
 
 
